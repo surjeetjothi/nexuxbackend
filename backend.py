@@ -165,34 +165,39 @@ app = FastAPI(title="EdTech AI Portal API - Enhanced", lifespan=lifespan)
 origins = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-    "https://backend1-bzh1.onrender.com",
-    "https://www.backend1-bzh1.onrender.com"
+    "https://nexuxbackend.onrender.com",
+    "https://ed-tech-portal.vercel.app",
+    "https://www.ed-tech-portal.vercel.app"
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount Static Files
 import os
-# Mount Static Files
-# Mount Static Files
-base_path = os.path.dirname(os.path.abspath(__file__))
-frontend_static = os.path.join(base_path, "../frontend/static_app/static")
 
-if os.path.exists(frontend_static):
-    static_dir = frontend_static
-else:
-    # Fallback for standalone backend deployment
-    static_dir = os.path.join(base_path, "static")
-    if not os.path.exists(static_dir):
-        os.makedirs(static_dir)
+# Static + Frontend Paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend", "static_app"))
+FRONTEND_INDEX = os.path.join(FRONTEND_DIR, "index.html")
+FRONTEND_SCRIPT = os.path.join(FRONTEND_DIR, "script.js")
+FRONTEND_STATIC_DIR = os.path.join(FRONTEND_DIR, "static")
 
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+# If a local frontend exists, mirror its static assets into backend static
+if os.path.isdir(FRONTEND_STATIC_DIR):
+    try:
+        shutil.copytree(FRONTEND_STATIC_DIR, STATIC_DIR, dirs_exist_ok=True)
+    except Exception:
+        pass
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 
@@ -2368,16 +2373,15 @@ async def verify_permission(permission: str, x_user_role: str = Header(None, ali
 
 
 # --- LMS & UPLOADS CONFIGURATION ---
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../frontend/static_app/static/uploads")
+UPLOAD_DIR = os.path.join(STATIC_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-# app.mount("/static", StaticFiles(directory="static"), name="static") # Removed duplicate mount
 
 # --- 7. API ENDPOINTS ---
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "../frontend/static_app/index.html")
+    file_path = FRONTEND_INDEX if os.path.exists(FRONTEND_INDEX) else os.path.join(base_dir, "index.html")
     
     if not os.path.exists(file_path):
         # Graceful Fallback: If index.html is missing (e.g. separate frontend), just show API status
@@ -2397,7 +2401,7 @@ async def read_root():
 @app.get("/script.js")
 async def read_script():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "../frontend/static_app/script.js")
+    file_path = FRONTEND_SCRIPT if os.path.exists(FRONTEND_SCRIPT) else os.path.join(base_dir, "script.js")
     if not os.path.exists(file_path):
         return Response(content="console.error('script.js not found');", media_type="text/javascript")
     with open(file_path, "r", encoding="utf-8") as f:
