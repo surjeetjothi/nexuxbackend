@@ -152,21 +152,39 @@ app = FastAPI(title="EdTech AI Portal API - Enhanced", lifespan=lifespan)
 
 # --- CORS Configuration ---
 # Fix: Explicitly list allowed origins for Production + Development
+# Support all Vercel deployment URLs (including preview deployments)
 origins = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     "https://nexuxbackend.onrender.com",
     "https://ed-tech-portal.vercel.app",
-    "https://www.ed-tech-portal.vercel.app"
+    "https://www.ed-tech-portal.vercel.app",
 ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# For production, we'll use a more permissive CORS policy to handle Vercel preview URLs
+# Check if we're in production (Render) or development
+IS_PRODUCTION = os.getenv("RENDER") == "true" or os.getenv("DATABASE_URL", "").startswith("postgres")
+
+if IS_PRODUCTION:
+    # In production, allow Vercel domains with regex pattern
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"https://.*\.vercel\.app",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+else:
+    # In development, use explicit origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
 
 import os
 
@@ -2385,6 +2403,32 @@ async def read_script():
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
     return Response(content=content, media_type="text/javascript")
+
+# Health check endpoint for debugging connection issues
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint to verify backend is running and configured correctly"""
+    try:
+        # Test database connection
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.close()
+        conn.close()
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+    
+    return {
+        "status": "healthy",
+        "message": "ClassBridge Backend is running",
+        "environment": "production" if IS_PRODUCTION else "development",
+        "database": db_status,
+        "cors_enabled": True,
+        "ai_enabled": AI_ENABLED,
+        "timestamp": datetime.now().isoformat()
+    }
+
 
 @app.post("/api/ai/lesson-plan", response_model=LessonPlanResponse)
 async def generate_lesson_plan(
