@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header, Depends, WebSocket, WebSocketDisconnect, Request, Body
+from fastapi import FastAPI, HTTPException, Header, Depends, WebSocket, WebSocketDisconnect, Request, Body, File, UploadFile, Form
 import secrets
 import time
 import hmac
@@ -7,36 +7,27 @@ import hashlib
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
-from fastapi import UploadFile, File, Form
-
 try:
     from pypdf import PdfReader
 except ImportError:
     PdfReader = None
     print("Warning: pypdf module not found. PDF processing will be disabled.")
 
-
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional 
 import psycopg2
 import sqlite3
 from psycopg2.extras import DictCursor
-# import pandas as pd # Moved to local scope
 import io
 import csv
 from datetime import datetime, timedelta
-# from sklearn.ensemble import RandomForestClassifier (Moved to function)
-# import numpy as np # Moved to local scope
 import warnings 
 import os
 import logging
 import uuid
 import shutil
 import json
-import json
-from fastapi import FastAPI, HTTPException, Header, Depends, WebSocket, WebSocketDisconnect, File, UploadFile, Form
 from fastapi.staticfiles import StaticFiles
-# from groq import Groq (Moved to initialization block) 
 import random
 import smtplib
 from email.mime.text import MIMEText
@@ -52,7 +43,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
-import os
 # Force load .env from the script's directory
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=env_path, override=True)
@@ -165,34 +155,39 @@ app = FastAPI(title="EdTech AI Portal API - Enhanced", lifespan=lifespan)
 origins = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-    "https://backend1-bzh1.onrender.com",
-    "https://www.backend1-bzh1.onrender.com"
+    "https://nexuxbackend.onrender.com",
+    "https://ed-tech-portal.vercel.app",
+    "https://www.ed-tech-portal.vercel.app"
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount Static Files
 import os
-# Mount Static Files
-# Mount Static Files
-base_path = os.path.dirname(os.path.abspath(__file__))
-frontend_static = os.path.join(base_path, "../frontend/static_app/static")
 
-if os.path.exists(frontend_static):
-    static_dir = frontend_static
-else:
-    # Fallback for standalone backend deployment
-    static_dir = os.path.join(base_path, "static")
-    if not os.path.exists(static_dir):
-        os.makedirs(static_dir)
+# Static + Frontend Paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend", "static_app"))
+FRONTEND_INDEX = os.path.join(FRONTEND_DIR, "index.html")
+FRONTEND_SCRIPT = os.path.join(FRONTEND_DIR, "script.js")
+FRONTEND_STATIC_DIR = os.path.join(FRONTEND_DIR, "static")
 
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+# If a local frontend exists, mirror its static assets into backend static
+if os.path.isdir(FRONTEND_STATIC_DIR):
+    try:
+        shutil.copytree(FRONTEND_STATIC_DIR, STATIC_DIR, dirs_exist_ok=True)
+    except Exception:
+        pass
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 
@@ -451,11 +446,10 @@ class RegisterRequest(BaseModel):
     school_id: Optional[int] = 1
 
 class ClassScheduleRequest(BaseModel):
-    teacher_id: str
     topic: str
-    date: str # Format: YYYY-MM-DD HH:MM
+    date: str
     meet_link: str
-    target_students: List[str] 
+    target_students: Optional[List[str]] = None
 
 class ClassResponse(BaseModel):
     id: int
@@ -545,9 +539,13 @@ class AuditLogResponse(BaseModel):
     duration_minutes: Optional[int] = None
 
 class QuizCreateRequest(BaseModel):
-    group_id: int
+    group_id: Optional[int] = None
     title: str
-    questions: List[Dict[str, Any]] # JSON List of questions
+    questions: list
+    time_limit: Optional[int] = 0
+    target_type: Optional[str] = "group"
+    target_id: Optional[str] = None
+    acknowledged: bool = False
 
 class QuizSubmitRequest(BaseModel):
     student_id: str
@@ -598,12 +596,6 @@ class GradeSubmissionRequest(BaseModel):
     grade: float
     feedback: str = ""
 
-class LessonPlanRequest(BaseModel):
-    topic: str
-    grade: str
-    subject: str
-    duration_mins: int
-    description: Optional[str] = None
 
 class LessonPlanResponse(BaseModel):
     content: str
@@ -708,8 +700,6 @@ class DocumentResponse(BaseModel):
     document_name: str
     file_path: str
     upload_date: str
-    uploaded_by: Optional[str]
-
     uploaded_by: Optional[str]
 
 class ResourceCreateRequest(BaseModel):
@@ -1733,6 +1723,7 @@ def seed_rbac_data(conn):
         ('student.info.view', 'View Student Information', 'Student Info'),
         ('student.info.manage', 'Manage Student Information', 'Student Info'),
         ('student.progress.view', 'View Student Progress', 'Student Info'),
+        ('attendance.manage', 'Manage Student Attendance', 'Academics'),
     ]
 
     # Create Finance Settings Table if not exists
@@ -1758,6 +1749,8 @@ def seed_rbac_data(conn):
     for code, desc, group in perms:
         cursor.execute("INSERT INTO permissions (code, description, group_name) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", (code, desc, group))
     
+    conn.commit()
+    
     # 2. Key Roles
     # Ensuring we have the roles requested
     roles_def = [
@@ -1776,6 +1769,8 @@ def seed_rbac_data(conn):
         exists = cursor.execute("SELECT id FROM roles WHERE name = ?", (r_name,)).fetchone()
         if not exists:
             cursor.execute("INSERT INTO roles (name, description, is_system) VALUES (?, ?, TRUE)", (r_name, r_desc))
+    
+    conn.commit()
     
     # Fetch IDs
     roles = {row['name']: row['id'] for row in cursor.execute("SELECT name, id FROM roles WHERE is_system = TRUE").fetchall()}
@@ -1850,51 +1845,39 @@ def seed_rbac_data(conn):
     conn.commit()
 
 # --- RBAC API ROUTES ---
-@app.get("/api/admin/roles")
+@app.get("/api/admin/roles", response_model=List[RoleResponse])
 async def get_roles(
     x_user_role: str = Header(None, alias="X-User-Role"),
-    x_school_id: Optional[int] = Header(None, alias="X-School-Id") # Mocked for now, usually from token
+    x_user_id: str = Header(None, alias="X-User-Id")
 ):
+    await verify_permission("role_management", x_user_id=x_user_id)
+    
     conn = get_db_connection()
-    c = conn.cursor()
-    
-    query = "SELECT r.id, r.name, r.description, r.status, r.is_system, COUNT(rp.permission_id) as perm_count FROM roles r LEFT JOIN role_permissions rp ON r.id = rp.role_id"
-    params = []
-    
-    # FILTER: Root_Super_Admin should only be visible to Root_Super_Admin
-    if x_user_role != 'Root_Super_Admin':
-        query += " WHERE r.name != 'Root_Super_Admin'"
-    else:
-        query += " WHERE 1=1" # Dummy
-
-    # Note: Roles are currently shared globally in this simplified DB schema.
-    # In a real multi-tenant DB, roles would have a 'school_id' column or be purely system-defined.
-    # For this implementation, we assume Roles are System-Wide Templates, so we don't filter by school_id for *definitions*,
-    # but the constraints requested say "Tenant_Admin... only see roles of their own institution".
-    # Since we lack custom roles per school in the current schema, we will skip the school_id filter for roles list 
-    # OR assumes roles can be created per school. 
-    # Let's keep it simple: Show all (except Root) to Admins.
-    
-    query += " GROUP BY r.id"
-    
-    roles = c.execute(query, params).fetchall()
-    
-    result = []
-    for r in roles:
-        # Format Code R-XXX
-        formatted_code = f"R-{r['id']:03d}"
+    try:
+        roles = conn.execute("SELECT * FROM roles").fetchall()
         
-        result.append({
-            "id": r['id'],
-            "code": formatted_code,
-            "name": r['name'],
-            "description": r['description'],
-            "status": r['status'] or 'Active',
-            "is_system": r['is_system'],
-            "permission_count": r['perm_count']
-        })
-    conn.close()
-    return result
+        result = []
+        for r in roles:
+            # Fetch permissions for each role
+            perms = conn.execute("""
+                SELECT p.id, p.code, p.description 
+                FROM permissions p
+                JOIN role_permissions rp ON p.id = rp.permission_id
+                WHERE rp.role_id = ?
+            """, (r['id'],)).fetchall()
+            
+            result.append(RoleResponse(
+                id=r['id'],
+                code=r['name'].replace(' ', '_').upper(), # Dynamic code generation if missing
+                name=r['name'],
+                description=r['description'] or "",
+                status=r['status'],
+                is_system=bool(r['is_system']),
+                permissions=[dict(p) for p in perms]
+            ))
+        return result
+    finally:
+        conn.close()
 
 @app.get("/api/admin/permissions")
 async def get_permissions(x_user_id: str = Header(None, alias="X-User-Id")):
@@ -2368,16 +2351,15 @@ async def verify_permission(permission: str, x_user_role: str = Header(None, ali
 
 
 # --- LMS & UPLOADS CONFIGURATION ---
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../frontend/static_app/static/uploads")
+UPLOAD_DIR = os.path.join(STATIC_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-# app.mount("/static", StaticFiles(directory="static"), name="static") # Removed duplicate mount
 
 # --- 7. API ENDPOINTS ---
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "../frontend/static_app/index.html")
+    file_path = FRONTEND_INDEX if os.path.exists(FRONTEND_INDEX) else os.path.join(base_dir, "index.html")
     
     if not os.path.exists(file_path):
         # Graceful Fallback: If index.html is missing (e.g. separate frontend), just show API status
@@ -2397,7 +2379,7 @@ async def read_root():
 @app.get("/script.js")
 async def read_script():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "../frontend/static_app/script.js")
+    file_path = FRONTEND_SCRIPT if os.path.exists(FRONTEND_SCRIPT) else os.path.join(base_dir, "script.js")
     if not os.path.exists(file_path):
         return Response(content="console.error('script.js not found');", media_type="text/javascript")
     with open(file_path, "r", encoding="utf-8") as f:
@@ -2614,9 +2596,19 @@ async def login_user(request: LoginRequest):
     db_role = user['role'].strip()
     req_role = request.role.strip()
     
-    if db_role.lower() == req_role.lower():
+    # Harmonize Frontend Strings with Backend Roles
+    role_map = {
+        'Principal': 'Tenant_Admin',
+        'Admin': 'Root_Super_Admin',
+        'Parent': 'Parent_Guardian'
+    }
+    mapped_req_role = role_map.get(req_role, req_role)
+
+    if db_role.lower() == req_role.lower() or db_role.lower() == mapped_req_role.lower():
         allow_login = True
-    elif db_role == 'Admin' and (req_role == 'Teacher' or req_role == 'Principal'):
+    elif (db_role == 'Admin' or db_role == 'Root_Super_Admin') and (req_role in ['Teacher', 'Principal', 'Admin']):
+        allow_login = True
+    elif db_role == 'Tenant_Admin' and req_role == 'Principal':
         allow_login = True
     
     # Special case: 'teacher' user might be Teacher title but lower in DB or vice versa
@@ -2932,30 +2924,49 @@ async def register_user(request: RegisterRequest):
 
 # --- SUPER ADMIN: SCHOOL MANAGEMENT ---
 
-@app.post("/api/admin/schools", response_model=SchoolResponse)
+@app.post("/api/admin/schools", status_code=201)
 async def create_school(
     request: SchoolCreateRequest,
-    x_user_role: str = Header(None, alias="X-User-Role"),
     x_user_id: str = Header(None, alias="X-User-Id")
 ):
-    # Verify Super Admin Permission
+    if not x_user_id:
+         raise HTTPException(status_code=401, detail="Authentication required")
+
     conn = get_db_connection()
     try:
         user = conn.execute("SELECT is_super_admin FROM students WHERE id = ?", (x_user_id,)).fetchone()
         if not user or not user['is_super_admin']:
-             raise HTTPException(status_code=403, detail="Super Admin permission required.")
+             log_auth_event(x_user_id, "Unauthorized Access", "Attempted to create school without Super Admin access")
+             raise HTTPException(status_code=403, detail="Permission denied. SUPER ADMIN ONLY.")
         
-        cursor = conn.cursor()
         created_at = datetime.now().isoformat()
-        cursor.execute("INSERT INTO schools (name, address, contact_email, created_at) VALUES (?, ?, ?, ?) RETURNING id",
-                       (request.name, request.address, request.contact_email, created_at))
-        new_id = cursor.fetchone()[0]
+        cursor = conn.cursor()
+        
+        # INSERT School
+        cursor.execute(
+            "INSERT INTO schools (name, address, contact_email, created_at) VALUES (?, ?, ?, ?)",
+            (request.name, request.address, request.contact_email, created_at)
+        )
+        school_id = cursor.lastrowid
+        
+        # Create Admin user for this school
+        # Using contact_email as the ID/Username
+        cursor.execute(
+            "INSERT INTO students (id, name, role, password, school_id) VALUES (?, ?, ?, ?, ?)",
+            (request.contact_email, f"{request.name} Admin", "Admin", request.admin_password, school_id)
+        )
+        
         conn.commit()
-        return SchoolResponse(id=new_id, name=request.name, address=request.address, contact_email=request.contact_email, created_at=created_at)
     except sqlite3.IntegrityError:
-        raise HTTPException(status_code=400, detail="School name must be unique.")
+        conn.rollback()
+        raise HTTPException(status_code=400, detail="School name or Admin email already exists.")
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
+    
+    return {"message": "School and Admin account created successfully.", "school_id": school_id}
 
 @app.get("/api/admin/schools", response_model=List[SchoolResponse])
 async def list_schools():
@@ -4368,7 +4379,6 @@ async def get_teacher_assignments(section_id: Optional[int] = None,
                 a.section_id,
                 a.grade_level,
                 sec.name AS section_name,
-                sec.grade_level AS section_grade_level,
                 COALESCE((
                     SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id
                 ), 0) AS submission_count
@@ -4629,11 +4639,6 @@ async def generate_quiz(
 
 
 
-class ClassScheduleRequest(BaseModel):
-    topic: str
-    date: str
-    meet_link: str
-    target_students: Optional[List[str]] = None
 
 @app.get("/api/classes/upcoming")
 async def get_upcoming_classes(student_id: Optional[str] = None, x_user_id: str = Header(None, alias="X-User-Id")):
@@ -4856,14 +4861,6 @@ async def upload_group_material(group_id: int, file: UploadFile = File(...), tit
         raise HTTPException(status_code=500, detail=str(e))
 
 
-class QuizCreateRequest(BaseModel):
-    group_id: Optional[int] = None
-    title: str
-    questions: list
-    time_limit: Optional[int] = 0
-    target_type: Optional[str] = "group"
-    target_id: Optional[str] = None
-    acknowledged: bool = False
 
 @app.post("/api/quizzes/create", response_model=QuizResponse)
 async def create_quiz_endpoint(request: QuizCreateRequest):
@@ -5099,49 +5096,6 @@ async def get_schools():
     finally:
         conn.close()
 
-@app.post("/api/admin/schools", status_code=201)
-async def create_school(
-    request: SchoolCreateRequest,
-    x_user_id: str = Header(None, alias="X-User-Id")
-):
-    if not x_user_id:
-         raise HTTPException(status_code=401, detail="Authentication required")
-
-    conn = get_db_connection()
-    try:
-        user = conn.execute("SELECT is_super_admin FROM students WHERE id = ?", (x_user_id,)).fetchone()
-        if not user or not user['is_super_admin']:
-             log_auth_event(x_user_id, "Unauthorized Access", "Attempted to create school without Super Admin access")
-             raise HTTPException(status_code=403, detail="Permission denied. SUPER ADMIN ONLY.")
-        
-        created_at = datetime.now().isoformat()
-        cursor = conn.cursor()
-        
-        # INSERT School
-        cursor.execute(
-            "INSERT INTO schools (name, address, contact_email, created_at) VALUES (?, ?, ?, ?)",
-            (request.name, request.address, request.contact_email, created_at)
-        )
-        school_id = cursor.lastrowid
-        
-        # Create Admin user for this school
-        # Using contact_email as the ID/Username
-        cursor.execute(
-            "INSERT INTO students (id, name, role, password, school_id) VALUES (?, ?, ?, ?, ?)",
-            (request.contact_email, f"{request.name} Admin", "Admin", request.admin_password, school_id)
-        )
-        
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail="School name or Admin email already exists.")
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
-    
-    return {"message": "School and Admin account created successfully.", "school_id": school_id}
 
 @app.put("/api/admin/schools/{school_id}")
 async def update_school(
@@ -5640,39 +5594,6 @@ async def delete_document(doc_id: int, x_user_id: str = Header(None, alias="X-Us
 
 # --- ROLE & PERMISSION MANAGEMENT ENDPOINTS (FR-3) ---
 
-@app.get("/api/admin/roles", response_model=List[RoleResponse])
-async def get_roles(
-    x_user_role: str = Header(None, alias="X-User-Role"),
-    x_user_id: str = Header(None, alias="X-User-Id")
-):
-    await verify_permission("role_management", x_user_id=x_user_id)
-    
-    conn = get_db_connection()
-    try:
-        roles = conn.execute("SELECT * FROM roles").fetchall()
-        
-        result = []
-        for r in roles:
-            # Fetch permissions for each role
-            perms = conn.execute("""
-                SELECT p.id, p.code, p.description 
-                FROM permissions p
-                JOIN role_permissions rp ON p.id = rp.permission_id
-                WHERE rp.role_id = ?
-            """, (r['id'],)).fetchall()
-            
-            result.append(RoleResponse(
-                id=r['id'],
-                code=r['name'].replace(' ', '_').upper(), # Dynamic code generation if missing
-                name=r['name'],
-                description=r['description'] or "",
-                status=r['status'],
-                is_system=bool(r['is_system']),
-                permissions=[dict(p) for p in perms]
-            ))
-        return result
-    finally:
-        conn.close()
 
 @app.get("/api/admin/roles/{role_id}", response_model=RoleResponse)
 async def get_role_details(
@@ -7035,47 +6956,6 @@ async def create_assignment(req: AssignmentCreateRequest,
     finally:
         conn.close()
 
-@app.get("/api/teacher/assignments")
-async def get_teacher_assignments(section_id: Optional[int] = None,
-                                  x_user_role: str = Header(None, alias="X-User-Role"),
-                                  x_user_id: str = Header(None, alias="X-User-Id"),
-                                  x_school_id: Optional[int] = Header(None, alias="X-School-Id")):
-    await verify_permission("assignment.view", x_user_role=x_user_role, x_user_id=x_user_id)
-    conn = get_db_connection()
-    try:
-        query = """
-            SELECT
-                a.id,
-                a.group_id,
-                a.title,
-                a.description,
-                a.due_date,
-                a.type,
-                a.points,
-                a.section_id,
-                a.grade_level,
-                sec.name AS section_name,
-                COALESCE((
-                    SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id
-                ), 0) AS submission_count
-            FROM assignments a
-            LEFT JOIN sections sec ON a.section_id = sec.id
-        """
-        conditions = []
-        params = []
-        if section_id:
-            conditions.append("a.section_id = ?")
-            params.append(section_id)
-        if x_school_id:
-            conditions.append("(a.section_id IS NULL OR sec.school_id = ?)")
-            params.append(x_school_id)
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY a.due_date DESC, a.id DESC"
-        rows = conn.execute(query, tuple(params)).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 @app.post("/api/assignments/{assignment_id}/submit")
 async def submit_assignment(assignment_id: int,
