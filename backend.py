@@ -156,35 +156,24 @@ app = FastAPI(title="EdTech AI Portal API - Enhanced", lifespan=lifespan)
 origins = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-    "https://nexuxbackend.onrender.com",
+    "https://classbridge-backend-bqj3.onrender.com",
     "https://ed-tech-portal.vercel.app",
     "https://www.ed-tech-portal.vercel.app",
 ]
 
-# For production, we'll use a more permissive CORS policy to handle Vercel preview URLs
-# Check if we're in production (Render) or development
+# For production, also allow Vercel preview URLs via regex.
+# We keep explicit origins to avoid accidental CORS denial for main domains.
 IS_PRODUCTION = os.getenv("RENDER") == "true" or os.getenv("DATABASE_URL", "").startswith("postgres")
 
-if IS_PRODUCTION:
-    # In production, allow Vercel domains with regex pattern
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origin_regex=r"https://.*\.vercel\.app",
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-    )
-else:
-    # In development, use explicit origins
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_origin_regex=r"https://.*\.vercel\.app" if IS_PRODUCTION else None,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 import os
 
